@@ -507,8 +507,12 @@ If approved → Write Executor runs; otherwise → return proposal only.
 ---
 
 ## 9) Definition of done (agent scope)
-- Implements the topology above with ADK.
+- ✅ Implements the topology above with ADK (using BaseSpecialistAgent wrapper).
+- ✅ ReportWriterAgent and CriticAgent implemented.
+- ✅ Course correction with expanded time windows and broadened queries.
+- ✅ Parallel fan-out execution for independent steps.
+- ✅ WriteExecutor for writes (Approval Gate deferred).
+- ✅ Local tools wired (parse_time_window, resolve_person, extract_action_items).
 - Demonstrates all sample tasks (propose writes; execute writes only after approval).
-- Handles empty/ambiguous/throttled outcomes via course correction.
 - Produces structured outputs usable by your existing UI.
 

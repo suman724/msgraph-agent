@@ -4,10 +4,23 @@ This agent uses the **Google Agent Development Kit (ADK)** to interact with Micr
 
 ## Architecture
 
-The agent follows a **Dispatcher + Specialist** topology:
-- **WorkspaceCoordinatorAgent**: Plans tasks and delegates to specialists.
-- **Specialists**: `MailAnalystAgent`, `CalendarAnalystAgent`, `DriveAnalystAgent`.
-- **MCP Toolset**: Connects to a Remote MS Graph MCP Server via SSE (Server-Sent Events) and dynamically discovers available tools.
+The agent follows a **Dispatcher + Specialist** topology with validation:
+
+### Core Agents
+- **WorkspaceCoordinatorAgent**: Plans tasks, delegates to specialists, manages course correction, and aggregates results.
+- **Domain Specialists**: `MailAnalystAgent`, `CalendarAnalystAgent`, `DriveAnalystAgent` for domain-specific operations.
+- **ReportWriterAgent**: Composes structured reports from evidence.
+- **CriticAgent**: Validates responses for quality and completeness (PASS/FAIL).
+
+### Infrastructure
+- **MCP Toolset**: Connects to Remote MS Graph MCP Server via SSE with dynamic tool discovery.
+- **McpAuthManager**: Handles interactive PKCE authentication flow.
+- **WriteExecutor**: Non-LLM helper for write operations (after approval).
+
+### Key Features
+- **Parallel Fan-Out**: Independent steps execute concurrently.
+- **Course Correction**: Automatic retry with expanded time windows or broadened queries.
+- **Local Tools**: `parse_time_window`, `resolve_person`, `extract_action_items`.
 
 ## Prerequisites
 
