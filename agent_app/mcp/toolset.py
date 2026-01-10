@@ -1,10 +1,13 @@
 import asyncio
 import os
+import logging
 from typing import List, Callable, Dict, Any, Optional
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.types import Tool
 from contextlib import AsyncExitStack
+
+logger = logging.getLogger(__name__)
 
 class McpToolset:
     def __init__(self, server_url: str, auth_token: Optional[str] = None):
@@ -12,6 +15,13 @@ class McpToolset:
         self.auth_token = auth_token
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
+        self.session_id: Optional[str] = None
+
+    def set_session_id(self, session_id: str):
+        """
+        Sets the session ID to be injected into future tool calls.
+        """
+        self.session_id = session_id
 
     async def initialize(self):
         """
@@ -21,21 +31,25 @@ class McpToolset:
         headers = {}
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
-            
+        
+        logger.debug(f"Connecting to MCP server: {self.server_url}")
         self.sse_context = sse_client(self.server_url, headers=headers)
         self.read, self.write = await self.exit_stack.enter_async_context(self.sse_context)
         self.session = await self.exit_stack.enter_async_context(ClientSession(self.read, self.write))
         await self.session.initialize()
+        logger.info("MCP Session initialized.")
 
     async def list_tools(self) -> List[Tool]:
         if not self.session:
             return []
         result = await self.session.list_tools()
+        logger.debug(f"Listed {len(result.tools)} tools from MCP.")
         return result.tools
 
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         if not self.session:
             raise RuntimeError("MCP Session not initialized")
+        logger.debug(f"Calling tool: {name} with arguments: {arguments}")
         result = await self.session.call_tool(name, arguments)
         return result
 
@@ -59,7 +73,16 @@ class McpToolset:
                 Dynamic wrapper for MCP tool.
                 """
                 try:
-                    result = await self.call_tool(_name, arguments)
+                    # Create a copy to avoid modifying the original dict
+                    args = dict(arguments)
+                    
+                    # Strategy B: Automatic Session Injection
+                    # If we have a session_id, inject it into the arguments
+                    if self.session_id:
+                        if "session_id" not in args:
+                             args["session_id"] = self.session_id
+                             
+                    result = await self.call_tool(_name, args)
                     # Result is typically an object with 'content'. 
                     # We assume text content for the Agent.
                     if hasattr(result, 'content') and result.content:

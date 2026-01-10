@@ -1,10 +1,13 @@
 import os
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Config:

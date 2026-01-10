@@ -49,9 +49,18 @@ Start the agent in CLI mode. Ensure you have set `MCP_SERVER_URL`.
 
 ```bash
 export MCP_SERVER_URL="http://localhost:8000/sse"
-export MCP_AUTH_TOKEN="your-secure-token"
+# MCP_AUTH_TOKEN is optional if using PKCE, but can be used for initial connection if needed.
+# export MCP_AUTH_TOKEN="your-secure-token" 
 make run
 ```
+
+### Authentication Flow (Interactive)
+
+When the agent starts, it will initiate an interactive **PKCE Authentication** flow with Microsoft Graph:
+1.  The agent will print a **Device Login URL** and a **Code**.
+2.  Open the URL in your browser and enter the Code.
+3.  Copy the resulting **Authorization Code** (or follow prompt instructions) and paste it back into the Agent's terminal.
+4.  The agent will obtain a session ID and proceed.
 
 ## Testing
 

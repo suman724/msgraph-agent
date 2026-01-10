@@ -49,6 +49,8 @@ class WorkspaceCoordinatorAgent:
         """
         Main execution loop.
         """
+        # Reset evidence store for this run
+        self.evidence_store = {}
         logger.info(f"Coordinator received query: {user_query}")
         
         # 1. Plan

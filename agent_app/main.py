@@ -1,11 +1,6 @@
 import asyncio
 import os
 import logging
-from google.adk.models import ModelClient
-# We need to find the correct ModelClient implementation in ADK
-# Usually it's via VertexAI or similar. I'll use a generic placeholder or check import.
-# For now, assumes google.adk.models.VertexAIModel exists or similar.
-# Check imports later.
 
 from agent_app.config import config
 from agent_app.mcp.toolset import McpToolset
@@ -30,8 +25,20 @@ async def main():
         logger.info(f"Initializing MCP Toolset with URL: {config.mcp_server_url}")
         mcp = McpToolset(server_url=config.mcp_server_url, auth_token=config.mcp_auth_token)
         await mcp.initialize()
+        
+        # 1.5 PKCE Authentication
+        from agent_app.mcp.auth import McpAuthManager
+        auth_manager = McpAuthManager(mcp)
+        session_id = await auth_manager.authenticate()
+        
+        if session_id:
+            logger.info(f"Setting Session ID: {session_id}")
+            mcp.set_session_id(session_id)
+        else:
+            logger.warning("No session ID returned from Auth. Continuing without it (might fail).")
+            
     except Exception as e:
-        logger.critical(f"Failed to initialize MCP Toolset: {e}", exc_info=True)
+        logger.critical(f"Failed to initialize/authenticate: {e}", exc_info=True)
         return
     
     try:

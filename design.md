@@ -488,7 +488,12 @@ If approved → Write Executor runs; otherwise → return proposal only.
 - **Shared McpToolset**:
   - Connects to Remote MCP Server via SSE (`MCP_SERVER_URL` + `MCP_AUTH_TOKEN`).
   - Implements **Dynamic Tool Discovery**: automatically fetches tools from the server and wraps them as ADK-compatible callables.
+  - Implements **Session Injection**: Automatically injects `session_id` into tool arguments if authenticated.
   - No static tool schema required in code; the agent adapts to the server's capabilities.
+
+- **McpAuthManager**:
+  - Handles the interactive **PKCE Authentication** flow acting as a gateway before the Coordinator starts.
+  - Manages `begin_pkce` -> User Interaction -> `complete_pkce` handshake.
 
 ### 8.2 Tool exposure strategy
 - Expose **read tools** to specialists freely.

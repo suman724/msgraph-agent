@@ -39,6 +39,30 @@ async def test_mcp_toolset_initialization_with_auth():
             mock_session.initialize.assert_awaited_once()
 
 @pytest.mark.asyncio
+async def test_mcp_toolset_session_injection():
+    mock_tool = MagicMock()
+    mock_tool.name = "test_tool"
+    mock_tool.description = "desc"
+    
+    toolset = McpToolset("http://mock")
+    toolset.session = MagicMock()
+    toolset.session.list_tools = AsyncMock(return_value=MagicMock(tools=[mock_tool]))
+    toolset.call_tool = AsyncMock(return_value="success")
+    
+    # Set session ID
+    toolset.set_session_id("sess_abc")
+    
+    # Get wrapped tools
+    tools = await toolset.get_adk_tools()
+    wrapper = tools[0]
+    
+    # Call wrapper WITHOUT session_id
+    await wrapper({"arg": "val"})
+    
+    # Verify call_tool received session_id injected
+    toolset.call_tool.assert_called_with("test_tool", {"arg": "val", "session_id": "sess_abc"})
+
+@pytest.mark.asyncio
 async def test_mcp_toolset_initialization_without_auth():
     """
     Verifies that McpToolset does NOT pass Authorization header when auth_token is None.
