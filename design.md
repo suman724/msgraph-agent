@@ -28,50 +28,45 @@ Scope: **agent only** (no UI, no auth callback service, no storage layers beyond
 
 ```mermaid
 flowchart TB
-    U[User Query] --> C[WorkspaceCoordinatorAgent
-(Dispatcher + Planner + Aggregator)]
+    U["User Query"] --> C["WorkspaceCoordinatorAgent<br/>(Dispatcher + Planner + Aggregator)"]
 
     %% Planning + control
-    C -->|Parse intent / time window / entities| P[TaskSpec Builder]
-    C -->|Creates Plan Steps| PL[Plan Generator]
+    C -->|Parse intent / time window / entities| P["TaskSpec Builder"]
+    C -->|Creates Plan Steps| PL["Plan Generator"]
 
     %% Domain routing
-    C -->|Read tasks| M[MailAnalystAgent]
-    C -->|Read tasks| K[CalendarAnalystAgent]
-    C -->|Read tasks| D[DriveAnalystAgent]
+    C -->|Read tasks| M["MailAnalystAgent"]
+    C -->|Read tasks| K["CalendarAnalystAgent"]
+    C -->|Read tasks| D["DriveAnalystAgent"]
 
     %% Shared utilities/tools
-    C --> TW[Tool: parse_time_window]
-    C --> RP[Tool: resolve_person]
-    C --> EX[Tool: extract_action_items]
+    C --> TW["Tool: parse_time_window"]
+    C --> RP["Tool: resolve_person"]
+    C --> EX["Tool: extract_action_items"]
 
     %% MCP toolset (single integration surface)
-    M -->|MCP tools| MCP[(MCP Toolset
-Email/Calendar/OneDrive)]
+    M -->|MCP tools| MCP["(MCP Toolset<br/>Email/Calendar/OneDrive)"]
     K -->|MCP tools| MCP
     D -->|MCP tools| MCP
 
     %% Synthesis
-    M --> S[Evidence Store
-(in-memory for this run)]
+    M --> S["Evidence Store<br/>(in-memory for this run)"]
     K --> S
     D --> S
 
     %% Writing / formatting
-    C -->|Needs long-form doc| R[ReportWriterAgent]
+    C -->|Needs long-form doc| R["ReportWriterAgent"]
     S --> R
 
     %% Quality + compliance
-    R --> V[CriticAgent]
+    R --> V["CriticAgent"]
     C --> V
-    V -->|PASS| OUT[Final Answer]
+    V -->|PASS| OUT["Final Answer"]
     V -->|FAIL: missing facts/structure| C
 
     %% Side effects gating
-    C -->|Before writes| AG[Approval Gate
-(tool call)]
-    AG -->|Approved| W[Write Executor
-(MCP write tools)]
+    C -->|Before writes| AG["Approval Gate<br/>(tool call)"]
+    AG -->|Approved| W["Write Executor<br/>(MCP write tools)"]
     W --> MCP
     AG -->|Rejected| OUT
 ```
