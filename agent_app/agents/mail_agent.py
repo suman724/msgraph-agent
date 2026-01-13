@@ -1,10 +1,10 @@
+from google.adk import Agent
 from google.adk.models import BaseLlm
-from .base_agent import BaseSpecialistAgent
 
-class MailAnalystAgent(BaseSpecialistAgent):
+class MailAnalystAgent(Agent):
     def __init__(self, model_client: BaseLlm):
         super().__init__(
-            model_client=model_client,
+            model=model_client,
             name="MailAnalystAgent",
             instruction=(
                 "You are the Mail Analyst Agent. Your role is to interact with Microsoft Mail/Outlook.\n"

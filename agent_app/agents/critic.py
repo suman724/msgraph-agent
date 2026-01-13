@@ -1,16 +1,18 @@
+from google.adk import Agent
 from google.adk.models import BaseLlm
 from typing import Dict, Any
 import json
-from .base_agent import BaseSpecialistAgent
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 
-class CriticAgent(BaseSpecialistAgent):
+class CriticAgent(Agent):
     """
     Validates that the response meets quality and safety policies.
     Returns PASS or FAIL with a list of required fixes.
     """
     def __init__(self, model_client: BaseLlm):
         super().__init__(
-            model_client=model_client,
+            model=model_client,
             name="CriticAgent",
             instruction=(
                 "You are the Critic Agent (Validator). Your role is to verify quality and completeness.\n\n"
@@ -52,7 +54,31 @@ class CriticAgent(BaseSpecialistAgent):
         Please validate and provide your verdict as JSON.
         """
         
-        result = await self.run(context)
+        # Use Runner to execute self
+        session_service = InMemorySessionService()
+        runner = Runner(agent=self, app_name="MsgraphAgent", session_service=session_service)
+        
+        class SimpleContent:
+             def __init__(self, text):
+                 self.role = "user"
+                 self.parts = [text]
+        
+        response_text = ""
+        import uuid
+        try:
+             async for event in runner.run_async(
+                 user_id=str(uuid.uuid4()),
+                 session_id=str(uuid.uuid4()),
+                 new_message=SimpleContent(context)
+             ):
+                 if hasattr(event, "text") and event.text:
+                     response_text += event.text
+                 elif hasattr(event, "content") and event.content:
+                     response_text += str(event.content)
+        except Exception as e:
+             response_text = f"Error: {e}"
+        
+        result = response_text
         
         # Try to parse the JSON response
         try:

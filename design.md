@@ -469,27 +469,58 @@ If approved → Write Executor runs; otherwise → return proposal only.
 
 ## 8) Implementation notes for ADK wiring (agent-only)
 
-### 8.1 Recommended ADK object graph
-- One **Root LlmAgent** (Coordinator)
-- 3 **LlmAgents** (Mail/Calendar/Drive)
-- 1 **LlmAgent** (ReportWriter)
-- 1 **LlmAgent** (Critic)
-- Local **Function Tools** for deterministic parsing + approvals
-- **Shared McpToolset**:
-  - Connects to Remote MCP Server via SSE (`MCP_SERVER_URL` + `MCP_AUTH_TOKEN`).
-  - Implements **Dynamic Tool Discovery**: automatically fetches tools from the server and wraps them as ADK-compatible callables.
-  - Implements **Session Injection**: Automatically injects `session_id` into tool arguments if authenticated.
-  - No static tool schema required in code; the agent adapts to the server's capabilities.
+### 8.1 ADK Multi-Agent Constructs Used
+
+The agent uses native ADK orchestration primitives:
+
+| Construct | Purpose |
+|-----------|--------|
+| `google.adk.Agent` | Base class for all specialist agents (Mail, Calendar, Drive, ReportWriter, Critic) |
+| `google.adk.agents.ParallelAgent` | Concurrent retrieval - runs Mail, Calendar, and Drive agents in parallel |
+| `google.adk.agents.LoopAgent` | Validation cycle - iterates Synthesis → Critic until PASS or max iterations |
+| `google.adk.agents.SequentialAgent` | Main pipeline - chains Retrieval → Validation stages |
+| `google.adk.runners.Runner` | Agent execution with session management |
+| `google.adk.tools.mcp_tool.McpToolset` | Native MCP server integration via SSE |
+
+### 8.2 Recommended ADK object graph
+```
+WorkspaceCoordinatorAgent (orchestrator class)
+  │
+  ├── SequentialAgent: MainPipeline
+  │     ├── ParallelAgent: Retrieval
+  │     │     ├── MailAnalystAgent (Agent)
+  │     │     ├── CalendarAnalystAgent (Agent)
+  │     │     └── DriveAnalystAgent (Agent)
+  │     │
+  │     └── LoopAgent: ValidationLoop (max_iterations=3)
+  │           ├── SynthesisAgent (Agent)
+  │           └── CriticAgent (Agent)
+  │
+  ├── ReportWriterAgent (Agent) - invoked on-demand
+  ├── WriteExecutor - non-LLM helper for side effects
+  └── Local Function Tools (parse_time_window, resolve_person, extract_action_items)
+```
+
+### 8.3 MCP Integration
+- **McpToolset**: Wraps ADK's `google.adk.tools.mcp_tool.McpToolset` with `SseConnectionParams`.
+- Connects to Remote MCP Server via SSE (`MCP_SERVER_URL` + `MCP_AUTH_TOKEN`).
+- Implements **Dynamic Tool Discovery**: automatically fetches tools from the server.
+- Implements **Session Injection**: Injects `session_id` and auth headers via `header_provider`.
 
 - **McpAuthManager**:
-  - Handles the interactive **PKCE Authentication** flow acting as a gateway before the Coordinator starts.
-  - Manages `begin_pkce` -> User Interaction -> `complete_pkce` handshake.
+  - Handles the interactive **PKCE Authentication** flow.
+  - Manages `begin_pkce` → User Interaction → `complete_pkce` handshake.
 
-### 8.2 Tool exposure strategy
+### 8.4 Model Client Support
+- **Gemini**: Native ADK support via `google.adk.models.Gemini`
+- **OpenAI/Azure**: Via `LiteLlm` (requires `litellm` package)
+- **Mock**: Fallback for development/testing
+
+### 8.5 Tool exposure strategy
 - Expose **read tools** to specialists freely.
-- Expose **write tools** only to the Write Executor helper (or a restricted agent) to avoid accidental writes.
+- Expose **write tools** only to the Write Executor helper to avoid accidental writes.
 
-### 8.3 Prompting strategy (short, deterministic)
+### 8.6 Prompting strategy (short, deterministic)
 - Coordinator prompt emphasizes: plan-first, metadata-first, approvals for writes.
 - Specialists prompts: retrieval-only, return structured outputs, no speculative conclusions.
 - Critic prompt: return PASS/FAIL + required fix list.
@@ -497,12 +528,14 @@ If approved → Write Executor runs; otherwise → return proposal only.
 ---
 
 ## 9) Definition of done (agent scope)
-- ✅ Implements the topology above with ADK (using BaseSpecialistAgent wrapper).
+- ✅ Implements the topology above with native ADK constructs (`Agent`, `ParallelAgent`, `LoopAgent`).
+- ✅ All specialist agents inherit from `google.adk.Agent`.
 - ✅ ReportWriterAgent and CriticAgent implemented.
-- ✅ Course correction with expanded time windows and broadened queries.
-- ✅ Parallel fan-out execution for independent steps.
+- ✅ Course correction via `LoopAgent` with max iterations.
+- ✅ Parallel fan-out via `ParallelAgent` for independent retrieval steps.
 - ✅ WriteExecutor for writes (Approval Gate deferred).
 - ✅ Local tools wired (parse_time_window, resolve_person, extract_action_items).
+- ✅ MCP integration via ADK's native `McpToolset`.
 - Demonstrates all sample tasks (propose writes; execute writes only after approval).
 - Produces structured outputs usable by your existing UI.
 

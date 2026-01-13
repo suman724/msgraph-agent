@@ -1,10 +1,41 @@
+"""
+WorkspaceCoordinatorAgent - Refactored to use Google ADK multi-agent constructs.
+
+This module implements the main orchestrator for the MSGraph Agent using:
+- ParallelAgent: For concurrent retrieval from Mail, Calendar, and Drive specialists
+- LoopAgent: For course correction/retry loops with the Critic
+- Agent with sub_agents: For hierarchical delegation
+
+Architecture:
+    User Query
+        |
+        v
+    CoordinatorAgent (LlmAgent with planner)
+        |
+        +---> ParallelAgent (Retrieval)
+        |         |---> MailAnalystAgent
+        |         |---> CalendarAnalystAgent
+        |         +---> DriveAnalystAgent
+        |
+        +---> LoopAgent (Validation)
+                  |---> SynthesisAgent
+                  +---> CriticAgent (escalate on PASS)
+"""
+
 import json
-import asyncio
-from google.adk.models import BaseLlm
 import logging
 from typing import Dict, Any, List, Optional
+import uuid
+
 from google.adk import Agent
-from ..schemas.task_spec import TaskSpec, Step
+from google.adk.agents.parallel_agent import ParallelAgent
+from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.models import BaseLlm
+from google.adk.tools.function_tool import FunctionTool
+
 from .mail_agent import MailAnalystAgent
 from .calendar_agent import CalendarAnalystAgent
 from .drive_agent import DriveAnalystAgent
@@ -22,33 +53,154 @@ logger = logging.getLogger(__name__)
 # Maximum retry attempts for course correction
 MAX_RETRY_ATTEMPTS = 3
 
+
+def create_parallel_retrieval_agent(
+    mail_agent: Agent,
+    calendar_agent: Agent,
+    drive_agent: Agent
+) -> ParallelAgent:
+    """
+    Creates a ParallelAgent that runs Mail, Calendar, and Drive 
+    specialists concurrently for retrieval tasks.
+    
+    This replaces the custom _execute_steps_parallel() method.
+    """
+    return ParallelAgent(
+        name="ParallelRetrievalAgent",
+        description="Runs domain specialists in parallel to gather evidence from Mail, Calendar, and Drive.",
+        sub_agents=[mail_agent, calendar_agent, drive_agent]
+    )
+
+
+def create_validation_loop_agent(
+    synthesis_agent: Agent,
+    critic_agent: Agent,
+    max_iterations: int = MAX_RETRY_ATTEMPTS
+) -> LoopAgent:
+    """
+    Creates a LoopAgent for the validation/course-correction cycle.
+    
+    The loop continues until:
+    - CriticAgent returns PASS (triggers escalation to exit loop)
+    - max_iterations is reached
+    
+    This replaces the custom _validate_with_critic() recursive method.
+    """
+    return LoopAgent(
+        name="ValidationLoopAgent",
+        description="Iteratively synthesizes and validates responses until quality criteria are met.",
+        sub_agents=[synthesis_agent, critic_agent],
+        max_iterations=max_iterations
+    )
+
+
 class WorkspaceCoordinatorAgent:
+    """
+    The main coordinator agent that orchestrates the workspace query pipeline.
+    
+    Uses ADK multi-agent constructs:
+    - ParallelAgent for concurrent retrieval (fan-out)
+    - LoopAgent for validation cycles (course correction)
+    - SequentialAgent for the main pipeline
+    
+    The coordinator still maintains:
+    - Evidence store for collected data
+    - Local tools for time parsing, person resolution, etc.
+    - Write executor for side-effect operations
+    """
+    
     def __init__(self, model_client: BaseLlm, mcp_toolset: McpToolset):
+        """
+        Initialize the coordinator with model client and MCP toolset.
+        
+        Args:
+            model_client: The LLM client for generation
+            mcp_toolset: The MCP toolset for MS Graph operations
+        """
         self.model_client = model_client
         self.mcp_toolset = mcp_toolset
         self.evidence_store: Dict[str, Any] = {}
         
-        # Domain specialists
+        # Initialize session service for ADK Runner
+        self.session_service = InMemorySessionService()
+        
+        # ------------------------------------------------------------
+        # Domain Specialist Agents (ADK Agents)
+        # These are LLM-based agents for specific domains
+        # ------------------------------------------------------------
+        self.mail_agent = MailAnalystAgent(model_client)
+        self.calendar_agent = CalendarAnalystAgent(model_client)
+        self.drive_agent = DriveAnalystAgent(model_client)
+        
+        # Legacy dict for backward compatibility
         self.specialists = {
-            "MailAnalystAgent": MailAnalystAgent(model_client),
-            "CalendarAnalystAgent": CalendarAnalystAgent(model_client),
-            "DriveAnalystAgent": DriveAnalystAgent(model_client),
+            "MailAnalystAgent": self.mail_agent,
+            "CalendarAnalystAgent": self.calendar_agent,
+            "DriveAnalystAgent": self.drive_agent,
         }
         
-        # Additional agents
+        # ------------------------------------------------------------
+        # Support Agents
+        # ------------------------------------------------------------
         self.report_writer = ReportWriterAgent(model_client)
         self.critic = CriticAgent(model_client)
         
-        # Write executor (non-LLM helper)
+        # ------------------------------------------------------------
+        # Multi-Agent Constructs (ADK orchestration primitives)
+        # ------------------------------------------------------------
+        # ParallelAgent for concurrent retrieval
+        self.retrieval_agent = create_parallel_retrieval_agent(
+            self.mail_agent,
+            self.calendar_agent,
+            self.drive_agent
+        )
+        
+        # Synthesis agent for composing final response
+        self.synthesis_agent = Agent(
+            model=model_client,
+            name="SynthesisAgent",
+            instruction=(
+                "You are the Synthesis Agent. Your role is to compose a clear, "
+                "comprehensive response from the collected evidence.\n\n"
+                "You will receive evidence from Mail, Calendar, and Drive queries.\n"
+                "Synthesize this into a coherent, well-structured response.\n"
+                "Be concise but complete. Cite sources when relevant."
+            )
+        )
+        
+        # LoopAgent for validation cycle
+        self.validation_loop = create_validation_loop_agent(
+            self.synthesis_agent,
+            self.critic,
+            max_iterations=MAX_RETRY_ATTEMPTS
+        )
+        
+        # ------------------------------------------------------------
+        # Main Pipeline: Sequential Agent combining all stages
+        # ------------------------------------------------------------
+        self.main_pipeline = SequentialAgent(
+            name="MainPipelineAgent",
+            description="Main orchestration pipeline: Retrieval -> Synthesis -> Validation",
+            sub_agents=[
+                self.retrieval_agent,
+                self.validation_loop
+            ]
+        )
+        
+        # ------------------------------------------------------------
+        # Write Executor (non-LLM helper for side effects)
+        # ------------------------------------------------------------
         self.write_executor = WriteExecutor(mcp_toolset)
         
-        # Local tools (coordinator-level)
+        # ------------------------------------------------------------
+        # Local Tools (coordinator-level, deterministic)
+        # ------------------------------------------------------------
         self.local_tools = {
             "parse_time_window": parse_time_window,
             "resolve_person": resolve_person,
             "extract_action_items": extract_action_items,
         }
-        
+
     async def initialize(self):
         """
         Fetches tools from MCP and registers them with specialists.
@@ -59,17 +211,78 @@ class WorkspaceCoordinatorAgent:
         
         # Distribute tools to domain specialists
         for name, agent in self.specialists.items():
-            for tool in tools:
-                 agent.add_tool(tool)
+            if hasattr(agent, 'tools') and isinstance(agent.tools, list):
+                agent.tools.extend(tools)
             logger.info(f"Registered {len(tools)} tools with {name}")
 
     async def run(self, user_query: str) -> str:
         """
-        Main execution loop with course correction and validation.
+        Main execution entry point.
+        
+        Uses the ADK Runner to execute the main pipeline which:
+        1. Runs parallel retrieval (ParallelAgent)
+        2. Synthesizes and validates (LoopAgent)
+        
+        Args:
+            user_query: The user's natural language query
+            
+        Returns:
+            The final response string
         """
         # Reset evidence store for this run
         self.evidence_store = {}
         logger.info(f"Coordinator received query: {user_query}")
+        
+        # Create a Runner for the main pipeline
+        runner = Runner(
+            agent=self.main_pipeline,
+            app_name="MsgraphAgent",
+            session_service=self.session_service
+        )
+        
+        # Simple content wrapper for Runner
+        class SimpleContent:
+            def __init__(self, text):
+                self.role = "user"
+                self.parts = [text]
+        
+        # Execute the pipeline
+        response_text = ""
+        session_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+        
+        try:
+            async for event in runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=SimpleContent(user_query)
+            ):
+                # Capture response events
+                if hasattr(event, "text") and event.text:
+                    response_text += event.text
+                elif hasattr(event, "content") and event.content:
+                    response_text += str(event.content)
+                    
+        except Exception as e:
+            logger.error(f"Pipeline execution failed: {e}")
+            # Fallback to legacy execution
+            return await self._legacy_run(user_query)
+        
+        # If pipeline didn't produce output, fallback to legacy
+        if not response_text.strip():
+            logger.warning("Pipeline produced no output, falling back to legacy execution")
+            return await self._legacy_run(user_query)
+            
+        return response_text
+
+    async def _legacy_run(self, user_query: str) -> str:
+        """
+        Legacy execution path for backward compatibility.
+        
+        This method preserves the original orchestration logic
+        in case the ADK pipeline doesn't work as expected.
+        """
+        from ..schemas.task_spec import TaskSpec, Step
         
         # 1. Plan
         task_spec = await self._plan(user_query)
@@ -91,16 +304,56 @@ class WorkspaceCoordinatorAgent:
         
         return final_response
 
-    async def _execute_steps_parallel(self, steps: List[Step]):
+    # ----------------------------------------------------------------
+    # Helper Methods (preserved from original implementation)
+    # ----------------------------------------------------------------
+    
+    async def _run_agent(self, agent: Agent, query: str) -> str:
+        """Run an ADK agent using a Runner."""
+        runner = Runner(
+            agent=agent,
+            app_name="MsgraphAgent",
+            session_service=self.session_service
+        )
+        
+        class SimpleContent:
+            def __init__(self, text):
+                self.role = "user"
+                self.parts = [text]
+                
+        response_text = ""
+        try:
+            session_id = str(uuid.uuid4())
+            user_id = str(uuid.uuid4())
+            
+            async for event in runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=SimpleContent(query)
+            ):
+                if hasattr(event, "text") and event.text:
+                    response_text += event.text
+                elif hasattr(event, "content") and event.content:
+                    response_text += str(event.content)
+                     
+        except Exception as e:
+            logger.error(f"Error running agent {agent.name}: {e}")
+            return f"Error: {str(e)}"
+            
+        return response_text
+
+    async def _execute_steps_parallel(self, steps: List) -> None:
         """
         Executes steps with parallel fan-out for independent steps.
-        Steps with dependencies wait for their dependencies to complete.
+        (Legacy method - kept for backward compatibility)
         """
+        import asyncio
+        from ..schemas.task_spec import Step
+        
         completed = set()
         pending_steps = list(steps)
         
         while pending_steps:
-            # Find steps that can run now (no unmet dependencies)
             runnable = []
             still_pending = []
             
@@ -112,11 +365,9 @@ class WorkspaceCoordinatorAgent:
                     still_pending.append(step)
             
             if not runnable:
-                # Deadlock or circular dependency
                 logger.error("No runnable steps - possible circular dependency")
                 break
             
-            # Execute runnable steps in parallel
             if len(runnable) > 1:
                 logger.info(f"Parallel fan-out: executing {len(runnable)} steps")
                 tasks = [self._execute_step_with_retry(step) for step in runnable]
@@ -131,7 +382,6 @@ class WorkspaceCoordinatorAgent:
                         step.outputs = result
                     completed.add(step.step_id)
             else:
-                # Single step - execute directly
                 step = runnable[0]
                 try:
                     result = await self._execute_step_with_retry(step)
@@ -144,21 +394,16 @@ class WorkspaceCoordinatorAgent:
             
             pending_steps = still_pending
 
-    async def _execute_step_with_retry(self, step: Step, attempt: int = 1) -> Dict[str, Any]:
-        """
-        Executes a step with course correction on failure/empty results.
-        """
+    async def _execute_step_with_retry(self, step, attempt: int = 1) -> Dict[str, Any]:
+        """Executes a step with course correction on failure/empty results."""
         result = await self._execute_step(step)
         
-        # Course correction: check for empty/failed results
         if self._is_empty_result(result) and attempt < MAX_RETRY_ATTEMPTS:
             logger.info(f"Empty result for step {step.step_id}, applying course correction (attempt {attempt})")
             
-            # Apply retry policy from step or default
             retry_policy = step.retry_policy or {}
             on_empty = retry_policy.get("on_empty", "expand_time_window")
             
-            # Modify inputs based on retry policy
             if on_empty == "expand_time_window":
                 step.inputs["time_window"] = self._expand_time_window(step.inputs.get("time_window", "1 day"))
             elif on_empty == "broaden_query":
@@ -194,13 +439,12 @@ class WorkspaceCoordinatorAgent:
 
     def _broaden_query(self, current: str) -> str:
         """Broadens a search query for retry."""
-        # Simple implementation: remove first word if multi-word
         words = current.split()
         if len(words) > 1:
             return " ".join(words[1:])
         return current
 
-    def _needs_report(self, task_spec: TaskSpec) -> bool:
+    def _needs_report(self, task_spec) -> bool:
         """Determines if the task requires a formal report."""
         report_keywords = ["report", "status", "summary report", "weekly report"]
         return any(kw in task_spec.intent.lower() for kw in report_keywords)
@@ -208,14 +452,11 @@ class WorkspaceCoordinatorAgent:
     async def _generate_report(self, query: str) -> str:
         """Generates a report using the ReportWriterAgent."""
         context = f"Generate a report for: {query}\nEvidence: {json.dumps(self.evidence_store)}"
-        result = await self.report_writer.run(context)
-        return result.text if hasattr(result, 'text') else str(result)
+        result = await self._run_agent(self.report_writer, context)
+        return result
 
     async def _validate_with_critic(self, query: str, response: str, attempt: int = 1) -> str:
-        """
-        Validates the response with the CriticAgent.
-        Applies course correction if validation fails.
-        """
+        """Validates the response with the CriticAgent."""
         verdict = await self.critic.validate(query, self.evidence_store, response)
         
         if verdict.get("verdict") == "PASS":
@@ -226,21 +467,7 @@ class WorkspaceCoordinatorAgent:
             logger.warning(f"Critic validation failed after {attempt} attempts, returning best effort")
             return response + "\n\n[Note: This response may be incomplete. Issues: " + str(verdict.get("issues", [])) + "]"
         
-        # Course correction based on Critic feedback
         logger.info(f"Critic validation: FAIL - {verdict.get('issues')}. Attempting correction.")
-        issues = verdict.get("issues", [])
-        
-        # Try to address issues
-        for issue in issues:
-            issue_lower = issue.lower()
-            if "time" in issue_lower or "date" in issue_lower:
-                # Need more specific time data - retry relevant steps
-                pass  # Would trigger step re-execution with expanded time
-            elif "missing" in issue_lower or "incomplete" in issue_lower:
-                # Need more data - could trigger additional retrieval
-                pass
-        
-        # Re-synthesize with feedback
         response = await self._synthesize_with_feedback(query, verdict.get("issues", []))
         return await self._validate_with_critic(query, response, attempt + 1)
 
@@ -257,11 +484,10 @@ class WorkspaceCoordinatorAgent:
         response = await self.model_client.generate(prompt)
         return response.text
 
-    async def _plan(self, query: str) -> TaskSpec:
-        """
-        Generates a TaskSpec from the user query.
-        """
-        # First, use local tools to parse any time references
+    async def _plan(self, query: str):
+        """Generates a TaskSpec from the user query."""
+        from ..schemas.task_spec import TaskSpec, Step
+        
         time_window = None
         for phrase in ["yesterday", "last week", "today", "last 7 days", "last month"]:
             if phrase in query.lower():
@@ -337,9 +563,8 @@ class WorkspaceCoordinatorAgent:
             )
         except Exception as e:
             logger.error(f"Planning failed: {e}")
-            # Fallback mock for testing
             if "email" in query.lower():
-                 return TaskSpec(
+                return TaskSpec(
                     intent="summarize_emails",
                     steps=[
                         Step(step_id="S1", name="List Emails", assigned_agent="MailAnalystAgent")
@@ -347,23 +572,23 @@ class WorkspaceCoordinatorAgent:
                 )
             return TaskSpec(intent="unknown")
 
-    async def _execute_step(self, step: Step) -> Dict[str, Any]:
+    async def _execute_step(self, step) -> Dict[str, Any]:
+        """Executes a single step by delegating to the appropriate agent."""
         agent = self.specialists.get(step.assigned_agent)
         if not agent:
-            # Check if it's a ReportWriter step
             if step.assigned_agent == "ReportWriterAgent":
-                return await self._generate_report(step.inputs.get("query", ""))
+                return {"output": await self._generate_report(step.inputs.get("query", ""))}
             return {"error": f"Unknown agent {step.assigned_agent}"}
         
-        # Construct prompt for the specialist
         context = f"Step: {step.name}. Inputs: {step.inputs}. Previous Evidence: {self.evidence_store}"
         
         logger.info(f"Invoking {step.assigned_agent} for step {step.name}")
         
-        response = await agent.run(context)
-        return {"status": "executed", "output": response.text}
+        output_text = await self._run_agent(agent, context)
+        return {"status": "executed", "output": output_text}
 
-    async def _synthesize(self, query: str, task_spec: TaskSpec) -> str:
+    async def _synthesize(self, query: str, task_spec) -> str:
+        """Synthesizes a final response from collected evidence."""
         prompt = f"""
         Construct a final answer for the user based on the evidence.
         Query: {query}

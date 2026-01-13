@@ -1,14 +1,14 @@
+from google.adk import Agent
 from google.adk.models import BaseLlm
-from .base_agent import BaseSpecialistAgent
 
-class ReportWriterAgent(BaseSpecialistAgent):
+class ReportWriterAgent(Agent):
     """
     Formats long-form artifacts (status reports) from structured signals.
     This agent does NOT retrieve data - it only uses the Evidence Store.
     """
     def __init__(self, model_client: BaseLlm):
         super().__init__(
-            model_client=model_client,
+            model=model_client,
             name="ReportWriterAgent",
             instruction=(
                 "You are the Report Writer Agent. Your role is to compose structured reports.\n"

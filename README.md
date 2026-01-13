@@ -4,22 +4,40 @@ This agent uses the **Google Agent Development Kit (ADK)** to interact with Micr
 
 ## Architecture
 
-The agent follows a **Dispatcher + Specialist** topology with validation:
+The agent follows a **Dispatcher + Specialist** topology using native ADK multi-agent constructs:
 
-### Core Agents
-- **WorkspaceCoordinatorAgent**: Plans tasks, delegates to specialists, manages course correction, and aggregates results.
-- **Domain Specialists**: `MailAnalystAgent`, `CalendarAnalystAgent`, `DriveAnalystAgent` for domain-specific operations.
+```
+User Query
+    │
+    ▼
+WorkspaceCoordinatorAgent
+    │
+    ├──► ParallelAgent (Retrieval)
+    │         ├── MailAnalystAgent
+    │         ├── CalendarAnalystAgent
+    │         └── DriveAnalystAgent
+    │
+    └──► LoopAgent (Validation)
+              ├── SynthesisAgent
+              └── CriticAgent
+```
+
+### Core Agents (ADK `Agent` subclasses)
+- **WorkspaceCoordinatorAgent**: Orchestrates the pipeline using ADK's `ParallelAgent`, `LoopAgent`, and `SequentialAgent`.
+- **Domain Specialists**: `MailAnalystAgent`, `CalendarAnalystAgent`, `DriveAnalystAgent` - inherit from `google.adk.Agent`.
 - **ReportWriterAgent**: Composes structured reports from evidence.
 - **CriticAgent**: Validates responses for quality and completeness (PASS/FAIL).
 
-### Infrastructure
-- **MCP Toolset**: Connects to Remote MS Graph MCP Server via SSE with dynamic tool discovery.
-- **McpAuthManager**: Handles interactive PKCE authentication flow.
+### Infrastructure (ADK Native)
+- **McpToolset**: Wraps ADK's `google.adk.tools.mcp_tool.McpToolset` with `SseConnectionParams` for SSE connection.
+- **McpAuthManager**: Handles interactive PKCE authentication flow for Microsoft Graph.
+- **Model Client**: Supports Gemini (native), LiteLLM (OpenAI/Azure), or mock for development.
 - **WriteExecutor**: Non-LLM helper for write operations (after approval).
 
 ### Key Features
-- **Parallel Fan-Out**: Independent steps execute concurrently.
-- **Course Correction**: Automatic retry with expanded time windows or broadened queries.
+- **Parallel Fan-Out**: Uses ADK's `ParallelAgent` for concurrent retrieval.
+- **Course Correction**: Uses ADK's `LoopAgent` with max iterations for retry cycles.
+- **Session State**: Uses ADK's `InMemorySessionService` for agent sessions.
 - **Local Tools**: `parse_time_window`, `resolve_person`, `extract_action_items`.
 
 ## Prerequisites
@@ -27,6 +45,7 @@ The agent follows a **Dispatcher + Specialist** topology with validation:
 - Python 3.12+
 - An MCP Server executable (e.g., the Microsoft Graph MCP server).
 - Credentials for MS Graph (handled by the MCP server).
+- (Optional) `litellm` package for OpenAI/Azure model support.
 
 ## Setup
 
@@ -43,6 +62,9 @@ The agent follows a **Dispatcher + Specialist** topology with validation:
    
    # OR manual install
    pip install -e ".[dev]"
+   
+   # For OpenAI/Azure model support (optional)
+   pip install litellm
    ```
 
 ## Configuration
@@ -53,7 +75,7 @@ The agent **requires** the MCP server to be configured via Environment Variables
 |----------|---------|-------------|
 | `MCP_SERVER_URL` | **Required** | The URL of the Remote MCP Server (e.g., `http://localhost:8000/sse`). |
 | `MCP_AUTH_TOKEN` | None | Authorization token for the MCP Server (sent as Bearer token). |
-| `MODEL_NAME` | `gpt-5` | The name of the model to use (e.g., `gpt-5`, `azure/gpt-4o`). |
+| `MODEL_NAME` | `gemini-2.0-flash` | Model to use (`gemini-*` for Gemini, `gpt-*` for OpenAI via LiteLLM). |
 | `MODEL_BASE_URL` | None | Base URL for the LLM API (e.g., Azure OpenAI endpoint). |
 
 ## Running the Agent
@@ -87,3 +109,14 @@ make test
 
 - **Build**: Uses `setuptools` (not yet configured for packaging, just run from source).
 - **CI**: GitHub Actions workflow in `.github/workflows/build.yml`.
+
+## ADK Constructs Used
+
+| Construct | Purpose |
+|-----------|---------|
+| `google.adk.Agent` | Base class for all specialist agents |
+| `google.adk.agents.ParallelAgent` | Concurrent retrieval from specialists |
+| `google.adk.agents.LoopAgent` | Validation retry loop with max iterations |
+| `google.adk.agents.SequentialAgent` | Main pipeline orchestration |
+| `google.adk.runners.Runner` | Agent execution with session management |
+| `google.adk.tools.mcp_tool.McpToolset` | Native MCP server integration |
